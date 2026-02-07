@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress-gateway-api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingress-gateway-api-controller
+  namespace: ingress-gateway-api
+  labels:
+    app: ingress-gateway-api-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ingress-gateway-api-controller
+  template:
+    metadata:
+      labels:
+        app: ingress-gateway-api-controller
+    spec:
+      serviceAccountName: ingress-gateway-api-controller
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: ingress-gateway-api:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --gateway-name=eg-gateway
+            - --gateway-namespace=envoy-gateway
+            - --leader-elect=true
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 500m
+              memory: 128Mi
+            requests:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
