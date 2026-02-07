@@ -8,7 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/example/ingress-gateway-api/internal/config"
+	"github.com/werdnum/ingress-gateway-api/internal/config"
 )
 
 // Converter converts Ingress resources to HTTPRoutes.

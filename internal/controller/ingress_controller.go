@@ -15,8 +15,8 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
-	"github.com/example/ingress-gateway-api/internal/config"
-	"github.com/example/ingress-gateway-api/internal/converter"
+	"github.com/werdnum/ingress-gateway-api/internal/config"
+	"github.com/werdnum/ingress-gateway-api/internal/converter"
 )
 
 const (

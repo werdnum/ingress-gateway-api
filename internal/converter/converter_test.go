@@ -8,7 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/example/ingress-gateway-api/internal/config"
+	"github.com/werdnum/ingress-gateway-api/internal/config"
 )
 
 func TestConvertIngress(t *testing.T) {

@@ -1,4 +1,4 @@
-module github.com/example/ingress-gateway-api
+module github.com/werdnum/ingress-gateway-api
 
 go 1.24.0
 
