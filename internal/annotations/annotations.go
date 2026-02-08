@@ -26,8 +26,9 @@ const (
 	CORSAllowCredentials = Prefix + "cors-allow-credentials"
 
 	// External auth annotations
-	AuthURL    = Prefix + "auth-url"
-	AuthSignin = Prefix + "auth-signin"
+	AuthURL             = Prefix + "auth-url"
+	AuthSignin          = Prefix + "auth-signin"
+	AuthResponseHeaders = Prefix + "auth-response-headers"
 
 	// Rewrite annotations
 	RewriteTarget = Prefix + "rewrite-target"

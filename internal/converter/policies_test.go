@@ -437,3 +437,34 @@ func TestBuildExtAuth(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildExtAuthWithResponseHeaders(t *testing.T) {
+	cfg := &config.Config{}
+	c := New(cfg)
+
+	annots := annotations.NewAnnotationSet(map[string]string{
+		"nginx.ingress.kubernetes.io/auth-url":              "http://oauth2-proxy.auth.svc.cluster.local:4180/oauth2/auth",
+		"nginx.ingress.kubernetes.io/auth-response-headers": "X-Auth-Request-User, X-Auth-Request-Email, X-Auth-Request-Groups",
+	})
+
+	extAuth := c.buildExtAuth(annots)
+
+	if extAuth == nil {
+		t.Fatal("expected extAuth config, got nil")
+	}
+
+	if extAuth.HTTP == nil {
+		t.Fatal("expected HTTP config, got nil")
+	}
+
+	if len(extAuth.HTTP.HeadersToBackend) != 3 {
+		t.Errorf("expected 3 headers to backend, got %d", len(extAuth.HTTP.HeadersToBackend))
+	}
+
+	expectedHeaders := []string{"X-Auth-Request-User", "X-Auth-Request-Email", "X-Auth-Request-Groups"}
+	for i, header := range expectedHeaders {
+		if extAuth.HTTP.HeadersToBackend[i] != header {
+			t.Errorf("expected header %s at index %d, got %s", header, i, extAuth.HTTP.HeadersToBackend[i])
+		}
+	}
+}

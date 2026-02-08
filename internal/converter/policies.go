@@ -326,6 +326,11 @@ func (c *Converter) buildExtAuth(annots annotations.AnnotationSet) *egv1alpha1.E
 		extAuth.HTTP.Path = ptr(parsed.Path)
 	}
 
+	// Set headers to pass from auth response to backend
+	if headers, ok := annots.GetStringSlice(annotations.AuthResponseHeaders); ok {
+		extAuth.HTTP.HeadersToBackend = headers
+	}
+
 	return extAuth
 }
 
