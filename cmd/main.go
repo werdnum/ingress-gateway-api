@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 
+	egv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -29,6 +30,7 @@ func init() {
 	utilruntime.Must(networkingv1.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
 	utilruntime.Must(gatewayv1beta1.Install(scheme))
+	utilruntime.Must(egv1alpha1.AddToScheme(scheme))
 }
 
 func main() {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	egv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,6 +41,9 @@ type IngressReconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingressclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backendtrafficpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=clienttrafficpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=securitypolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services;secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 
@@ -79,22 +83,47 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Convert Ingress to HTTPRoutes
-	httpRoutes := r.Converter.ConvertIngress(&ingress)
+	// Convert Ingress to HTTPRoutes and policies
+	result := r.Converter.ConvertIngressFull(&ingress)
 
 	// Create or update HTTPRoutes
-	for _, httpRoute := range httpRoutes {
+	for _, httpRoute := range result.HTTPRoutes {
 		if err := r.reconcileHTTPRoute(ctx, &ingress, httpRoute); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
 	// Create ReferenceGrant if needed for cross-namespace backend references
-	if err := r.reconcileReferenceGrants(ctx, &ingress, httpRoutes); err != nil {
+	if err := r.reconcileReferenceGrants(ctx, &ingress, result.HTTPRoutes); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Successfully reconciled Ingress", "httpRoutes", len(httpRoutes))
+	// Reconcile BackendTrafficPolicies
+	for _, btp := range result.BackendTrafficPolicies {
+		if err := r.reconcileBackendTrafficPolicy(ctx, &ingress, btp); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Reconcile ClientTrafficPolicy
+	if result.ClientTrafficPolicy != nil {
+		if err := r.reconcileClientTrafficPolicy(ctx, &ingress, result.ClientTrafficPolicy); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Reconcile SecurityPolicies
+	for _, sp := range result.SecurityPolicies {
+		if err := r.reconcileSecurityPolicy(ctx, &ingress, sp); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	logger.Info("Successfully reconciled Ingress",
+		"httpRoutes", len(result.HTTPRoutes),
+		"backendTrafficPolicies", len(result.BackendTrafficPolicies),
+		"securityPolicies", len(result.SecurityPolicies),
+		"hasClientTrafficPolicy", result.ClientTrafficPolicy != nil)
 	return ctrl.Result{}, nil
 }
 
@@ -128,6 +157,11 @@ func (r *IngressReconciler) handleDeletion(ctx context.Context, ingress *network
 			return ctrl.Result{}, err
 		}
 
+		// Delete owned policies
+		if err := r.deleteOwnedPolicies(ctx, ingress); err != nil {
+			return ctrl.Result{}, err
+		}
+
 		// Remove finalizer
 		controllerutil.RemoveFinalizer(ingress, FinalizerName)
 		if err := r.Update(ctx, ingress); err != nil {
@@ -155,6 +189,56 @@ func (r *IngressReconciler) deleteOwnedHTTPRoutes(ctx context.Context, ingress *
 				return err
 			}
 			logger.Info("Deleted HTTPRoute", "name", route.Name)
+		}
+	}
+
+	return nil
+}
+
+// deleteOwnedPolicies deletes all policy resources owned by the Ingress.
+func (r *IngressReconciler) deleteOwnedPolicies(ctx context.Context, ingress *networkingv1.Ingress) error {
+	logger := log.FromContext(ctx)
+	sourceRef := fmt.Sprintf("%s/%s", ingress.Namespace, ingress.Name)
+
+	// Delete BackendTrafficPolicies
+	var btpList egv1alpha1.BackendTrafficPolicyList
+	if err := r.List(ctx, &btpList, client.InNamespace(ingress.Namespace)); err != nil {
+		return err
+	}
+	for _, btp := range btpList.Items {
+		if btp.Annotations[SourceAnnotation] == sourceRef {
+			if err := r.Delete(ctx, &btp); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+			logger.Info("Deleted BackendTrafficPolicy", "name", btp.Name)
+		}
+	}
+
+	// Delete ClientTrafficPolicies
+	var ctpList egv1alpha1.ClientTrafficPolicyList
+	if err := r.List(ctx, &ctpList, client.InNamespace(ingress.Namespace)); err != nil {
+		return err
+	}
+	for _, ctp := range ctpList.Items {
+		if ctp.Annotations[SourceAnnotation] == sourceRef {
+			if err := r.Delete(ctx, &ctp); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+			logger.Info("Deleted ClientTrafficPolicy", "name", ctp.Name)
+		}
+	}
+
+	// Delete SecurityPolicies
+	var spList egv1alpha1.SecurityPolicyList
+	if err := r.List(ctx, &spList, client.InNamespace(ingress.Namespace)); err != nil {
+		return err
+	}
+	for _, sp := range spList.Items {
+		if sp.Annotations[SourceAnnotation] == sourceRef {
+			if err := r.Delete(ctx, &sp); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+			logger.Info("Deleted SecurityPolicy", "name", sp.Name)
 		}
 	}
 
@@ -196,6 +280,117 @@ func (r *IngressReconciler) reconcileHTTPRoute(ctx context.Context, ingress *net
 		return err
 	}
 	logger.Info("Updated HTTPRoute", "name", httpRoute.Name)
+	return nil
+}
+
+// reconcileBackendTrafficPolicy creates or updates a BackendTrafficPolicy.
+func (r *IngressReconciler) reconcileBackendTrafficPolicy(ctx context.Context, ingress *networkingv1.Ingress, policy *egv1alpha1.BackendTrafficPolicy) error {
+	logger := log.FromContext(ctx)
+
+	// Set namespace to match Ingress
+	policy.Namespace = ingress.Namespace
+
+	// Set owner reference
+	converter.SetPolicyOwnerReference(policy, ingress)
+
+	// Check if policy exists
+	existing := &egv1alpha1.BackendTrafficPolicy{}
+	err := r.Get(ctx, client.ObjectKeyFromObject(policy), existing)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			if err := r.Create(ctx, policy); err != nil {
+				return err
+			}
+			logger.Info("Created BackendTrafficPolicy", "name", policy.Name)
+			return nil
+		}
+		return err
+	}
+
+	// Update existing policy
+	existing.Spec = policy.Spec
+	existing.Annotations = policy.Annotations
+	existing.Labels = policy.Labels
+	existing.OwnerReferences = policy.OwnerReferences
+
+	if err := r.Update(ctx, existing); err != nil {
+		return err
+	}
+	logger.Info("Updated BackendTrafficPolicy", "name", policy.Name)
+	return nil
+}
+
+// reconcileClientTrafficPolicy creates or updates a ClientTrafficPolicy.
+func (r *IngressReconciler) reconcileClientTrafficPolicy(ctx context.Context, ingress *networkingv1.Ingress, policy *egv1alpha1.ClientTrafficPolicy) error {
+	logger := log.FromContext(ctx)
+
+	// Set namespace to match Ingress
+	policy.Namespace = ingress.Namespace
+
+	// Set owner reference
+	converter.SetPolicyOwnerReference(policy, ingress)
+
+	// Check if policy exists
+	existing := &egv1alpha1.ClientTrafficPolicy{}
+	err := r.Get(ctx, client.ObjectKeyFromObject(policy), existing)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			if err := r.Create(ctx, policy); err != nil {
+				return err
+			}
+			logger.Info("Created ClientTrafficPolicy", "name", policy.Name)
+			return nil
+		}
+		return err
+	}
+
+	// Update existing policy
+	existing.Spec = policy.Spec
+	existing.Annotations = policy.Annotations
+	existing.Labels = policy.Labels
+	existing.OwnerReferences = policy.OwnerReferences
+
+	if err := r.Update(ctx, existing); err != nil {
+		return err
+	}
+	logger.Info("Updated ClientTrafficPolicy", "name", policy.Name)
+	return nil
+}
+
+// reconcileSecurityPolicy creates or updates a SecurityPolicy.
+func (r *IngressReconciler) reconcileSecurityPolicy(ctx context.Context, ingress *networkingv1.Ingress, policy *egv1alpha1.SecurityPolicy) error {
+	logger := log.FromContext(ctx)
+
+	// Set namespace to match Ingress
+	policy.Namespace = ingress.Namespace
+
+	// Set owner reference
+	converter.SetPolicyOwnerReference(policy, ingress)
+
+	// Check if policy exists
+	existing := &egv1alpha1.SecurityPolicy{}
+	err := r.Get(ctx, client.ObjectKeyFromObject(policy), existing)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			if err := r.Create(ctx, policy); err != nil {
+				return err
+			}
+			logger.Info("Created SecurityPolicy", "name", policy.Name)
+			return nil
+		}
+		return err
+	}
+
+	// Update existing policy
+	existing.Spec = policy.Spec
+	existing.Annotations = policy.Annotations
+	existing.Labels = policy.Labels
+	existing.OwnerReferences = policy.OwnerReferences
+
+	if err := r.Update(ctx, existing); err != nil {
+		return err
+	}
+	logger.Info("Updated SecurityPolicy", "name", policy.Name)
 	return nil
 }
 
@@ -270,5 +465,8 @@ func (r *IngressReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&networkingv1.Ingress{}).
 		Owns(&gatewayv1.HTTPRoute{}).
+		Owns(&egv1alpha1.BackendTrafficPolicy{}).
+		Owns(&egv1alpha1.ClientTrafficPolicy{}).
+		Owns(&egv1alpha1.SecurityPolicy{}).
 		Complete(r)
 }
