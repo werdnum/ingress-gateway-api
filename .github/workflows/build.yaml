@@ -90,6 +90,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract version from tag
@@ -98,7 +99,22 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+          # Get current chart version
+          CURRENT=$(grep '^version:' charts/ingress-gateway-api/Chart.yaml | awk '{print $2}')
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+
+          # Compare versions (sort -V handles semver)
+          LATEST=$(printf '%s\n%s' "$VERSION" "$CURRENT" | sort -V | tail -n1)
+          if [ "$VERSION" = "$LATEST" ] && [ "$VERSION" != "$CURRENT" ]; then
+            echo "should_update=true" >> $GITHUB_OUTPUT
+            echo "Version $VERSION is newer than $CURRENT, will update chart"
+          else
+            echo "should_update=false" >> $GITHUB_OUTPUT
+            echo "Version $VERSION is not newer than $CURRENT, skipping update"
+          fi
+
       - name: Update Chart.yaml
+        if: steps.version.outputs.should_update == 'true'
         uses: mikefarah/yq@master
         with:
           cmd: |
@@ -106,9 +122,11 @@ jobs:
             yq -i '.appVersion = "${{ steps.version.outputs.version }}"' charts/ingress-gateway-api/Chart.yaml
 
       - name: Commit and push
+        if: steps.version.outputs.should_update == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main
           git add charts/ingress-gateway-api/Chart.yaml
           git commit -m "Bump Helm chart version to ${{ steps.version.outputs.version }}"
           git push origin main
