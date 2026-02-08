@@ -16,6 +16,10 @@ rules:
   - apiGroups: ["gateway.networking.k8s.io"]
     resources: ["httproutes", "referencegrants"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Envoy Gateway policy resources
+  - apiGroups: ["gateway.envoyproxy.io"]
+    resources: ["backendtrafficpolicies", "clienttrafficpolicies", "securitypolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Core resources for backend references
   - apiGroups: [""]
     resources: ["services", "secrets"]
