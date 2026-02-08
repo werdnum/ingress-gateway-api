@@ -1,0 +1,60 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/werdnum/ingress-gateway-api
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Gateway configuration
+gateway:
+  # Name of the Gateway resource to reference in HTTPRoutes
+  name: eg
+  # Namespace where the Gateway resource is located
+  namespace: envoy-gateway-system
+
+# Filter Ingresses by class (empty = process all)
+ingressClass: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 100m
+    memory: 64Mi
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Leader election
+leaderElect: true
+
+# Metrics and health endpoints
+metricsAddr: ":8080"
+healthProbeAddr: ":8081"
