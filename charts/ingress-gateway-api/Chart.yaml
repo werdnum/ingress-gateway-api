@@ -2,8 +2,8 @@ apiVersion: v2
 name: ingress-gateway-api
 description: A Kubernetes controller that converts Ingress resources to Gateway API HTTPRoutes
 type: application
-version: 0.4.1
-appVersion: "0.4.1"
+version: 0.4.2
+appVersion: "0.4.2"
 keywords:
   - kubernetes
   - ingress
