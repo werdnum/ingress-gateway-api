@@ -1,6 +1,7 @@
 package converter
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
@@ -191,10 +192,12 @@ func (c *Converter) generateClientTrafficPolicy(
 // generateSecurityPolicy creates a SecurityPolicy for the given HTTPRoute
 // based on CORS and ExtAuth annotations.
 func (c *Converter) generateSecurityPolicy(
+	ctx context.Context,
 	ingress *networkingv1.Ingress,
 	httpRoute *gatewayv1.HTTPRoute,
 	annots annotations.AnnotationSet,
 ) *egv1alpha1.SecurityPolicy {
+	_ = ctx // Reserved for future use
 	if !annots.HasSecurityPolicyAnnotations() {
 		return nil
 	}
@@ -305,12 +308,23 @@ func (c *Converter) buildExtAuth(annots annotations.AnnotationSet) *egv1alpha1.E
 		Namespace: ptr(gatewayv1.Namespace(serviceNamespace)),
 	}
 
-	// Set port if specified
+	// Set port - use explicit port if specified, otherwise default based on scheme
+	var port int32
 	if parsed.Port() != "" {
-		port, err := parsePort(parsed.Port())
+		p, err := parsePort(parsed.Port())
 		if err == nil {
-			backendRef.Port = ptr(gatewayv1.PortNumber(port))
+			port = p
 		}
+	} else {
+		// Default to 80 for HTTP, 443 for HTTPS
+		if parsed.Scheme == "https" {
+			port = 443
+		} else {
+			port = 80
+		}
+	}
+	if port > 0 {
+		backendRef.Port = ptr(gatewayv1.PortNumber(port))
 	}
 
 	extAuth := &egv1alpha1.ExtAuth{

@@ -1,6 +1,7 @@
 package converter
 
 import (
+	"context"
 	"testing"
 
 	networkingv1 "k8s.io/api/networking/v1"
@@ -296,7 +297,7 @@ func TestGenerateSecurityPolicy(t *testing.T) {
 			}
 			annots := annotations.NewAnnotationSet(tt.annotations)
 
-			policy := c.generateSecurityPolicy(ingress, httpRoute, annots)
+			policy := c.generateSecurityPolicy(context.Background(), ingress, httpRoute, annots)
 
 			if tt.wantPolicy && policy == nil {
 				t.Error("expected policy, got nil")
@@ -381,7 +382,7 @@ func TestBuildExtAuth(t *testing.T) {
 			authURL:       "http://auth.default.svc.cluster.local/verify",
 			wantService:   "auth",
 			wantNamespace: "default",
-			wantPort:      0,
+			wantPort:      80,
 			wantPath:      "/verify",
 		},
 		{
@@ -428,7 +429,7 @@ func TestBuildExtAuth(t *testing.T) {
 			if backendRef.Namespace != nil && string(*backendRef.Namespace) != tt.wantNamespace {
 				t.Errorf("expected namespace %s, got %s", tt.wantNamespace, *backendRef.Namespace)
 			}
-			if tt.wantPort > 0 && (backendRef.Port == nil || int32(*backendRef.Port) != tt.wantPort) {
+			if backendRef.Port == nil || int32(*backendRef.Port) != tt.wantPort {
 				t.Errorf("expected port %d, got %v", tt.wantPort, backendRef.Port)
 			}
 			if tt.wantPath != "" && (extAuth.HTTP.Path == nil || *extAuth.HTTP.Path != tt.wantPath) {

@@ -2,7 +2,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	egv1alpha1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -19,6 +21,45 @@ import (
 	"github.com/werdnum/ingress-gateway-api/internal/config"
 	"github.com/werdnum/ingress-gateway-api/internal/converter"
 )
+
+// permanentError wraps an error to indicate it should not be retried immediately.
+// The controller will requeue with a longer delay for permanent errors.
+type permanentError struct {
+	err error
+}
+
+func (e *permanentError) Error() string {
+	return e.err.Error()
+}
+
+func (e *permanentError) Unwrap() error {
+	return e.err
+}
+
+// newPermanentError wraps an error to mark it as permanent.
+func newPermanentError(err error) error {
+	return &permanentError{err: err}
+}
+
+// isPermanentError checks if an error is marked as permanent.
+func isPermanentError(err error) bool {
+	var pe *permanentError
+	return errors.As(err, &pe)
+}
+
+// permanentRequeueDelay is the delay before retrying permanent failures.
+const permanentRequeueDelay = 5 * time.Minute
+
+// handleReconcileError returns the appropriate Result based on error type.
+// Permanent errors are requeued with a longer delay.
+func handleReconcileError(err error) (ctrl.Result, error) {
+	if isPermanentError(err) {
+		// For permanent errors, requeue with a longer delay
+		return ctrl.Result{RequeueAfter: permanentRequeueDelay}, nil
+	}
+	// For transient errors, let controller-runtime handle backoff
+	return ctrl.Result{}, err
+}
 
 const (
 	// FinalizerName is the finalizer used by this controller.
@@ -39,6 +80,7 @@ type IngressReconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses/status,verbs=update;patch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingressclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backendtrafficpolicies,verbs=get;list;watch;create;update;patch;delete
@@ -78,45 +120,55 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if !controllerutil.ContainsFinalizer(&ingress, FinalizerName) {
 		controllerutil.AddFinalizer(&ingress, FinalizerName)
 		if err := r.Update(ctx, &ingress); err != nil {
+			if apierrors.IsConflict(err) {
+				logger.V(1).Info("Conflict updating Ingress finalizer, will retry")
+				return ctrl.Result{Requeue: true}, nil
+			}
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Convert Ingress to HTTPRoutes and policies
-	result := r.Converter.ConvertIngressFull(&ingress)
+	result := r.Converter.ConvertIngressFull(ctx, &ingress)
 
 	// Create or update HTTPRoutes
 	for _, httpRoute := range result.HTTPRoutes {
 		if err := r.reconcileHTTPRoute(ctx, &ingress, httpRoute); err != nil {
-			return ctrl.Result{}, err
+			return handleReconcileError(err)
 		}
 	}
 
 	// Create ReferenceGrant if needed for cross-namespace backend references
 	if err := r.reconcileReferenceGrants(ctx, &ingress, result.HTTPRoutes); err != nil {
-		return ctrl.Result{}, err
+		return handleReconcileError(err)
 	}
 
 	// Reconcile BackendTrafficPolicies
 	for _, btp := range result.BackendTrafficPolicies {
 		if err := r.reconcileBackendTrafficPolicy(ctx, &ingress, btp); err != nil {
-			return ctrl.Result{}, err
+			return handleReconcileError(err)
 		}
 	}
 
 	// Reconcile ClientTrafficPolicy
 	if result.ClientTrafficPolicy != nil {
 		if err := r.reconcileClientTrafficPolicy(ctx, &ingress, result.ClientTrafficPolicy); err != nil {
-			return ctrl.Result{}, err
+			return handleReconcileError(err)
 		}
 	}
 
 	// Reconcile SecurityPolicies
 	for _, sp := range result.SecurityPolicies {
 		if err := r.reconcileSecurityPolicy(ctx, &ingress, sp); err != nil {
-			return ctrl.Result{}, err
+			return handleReconcileError(err)
 		}
+	}
+
+	// Update Ingress status with Gateway address
+	if err := r.updateIngressStatus(ctx, &ingress); err != nil {
+		logger.Error(err, "failed to update Ingress status")
+		// Don't return error - status update failure shouldn't block reconciliation
 	}
 
 	logger.Info("Successfully reconciled Ingress",
@@ -165,6 +217,10 @@ func (r *IngressReconciler) handleDeletion(ctx context.Context, ingress *network
 		// Remove finalizer
 		controllerutil.RemoveFinalizer(ingress, FinalizerName)
 		if err := r.Update(ctx, ingress); err != nil {
+			if apierrors.IsConflict(err) {
+				logger.V(1).Info("Conflict removing finalizer, will retry")
+				return ctrl.Result{Requeue: true}, nil
+			}
 			return ctrl.Result{}, err
 		}
 		logger.Info("Finalizer removed, cleanup complete")
@@ -262,6 +318,10 @@ func (r *IngressReconciler) reconcileHTTPRoute(ctx context.Context, ingress *net
 		if apierrors.IsNotFound(err) {
 			// Create new HTTPRoute
 			if err := r.Create(ctx, httpRoute); err != nil {
+				if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) {
+					logger.Error(err, "Invalid HTTPRoute, will retry with longer delay", "name", httpRoute.Name)
+					return newPermanentError(err)
+				}
 				return err
 			}
 			logger.Info("Created HTTPRoute", "name", httpRoute.Name)
@@ -277,6 +337,10 @@ func (r *IngressReconciler) reconcileHTTPRoute(ctx context.Context, ingress *net
 	existing.OwnerReferences = httpRoute.OwnerReferences
 
 	if err := r.Update(ctx, existing); err != nil {
+		if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) {
+			logger.Error(err, "Invalid HTTPRoute update, will retry with longer delay", "name", httpRoute.Name)
+			return newPermanentError(err)
+		}
 		return err
 	}
 	logger.Info("Updated HTTPRoute", "name", httpRoute.Name)
@@ -299,6 +363,10 @@ func (r *IngressReconciler) reconcileBackendTrafficPolicy(ctx context.Context, i
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			if err := r.Create(ctx, policy); err != nil {
+				if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) {
+					logger.Error(err, "Invalid BackendTrafficPolicy, will retry with longer delay", "name", policy.Name)
+					return newPermanentError(err)
+				}
 				return err
 			}
 			logger.Info("Created BackendTrafficPolicy", "name", policy.Name)
@@ -314,6 +382,10 @@ func (r *IngressReconciler) reconcileBackendTrafficPolicy(ctx context.Context, i
 	existing.OwnerReferences = policy.OwnerReferences
 
 	if err := r.Update(ctx, existing); err != nil {
+		if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) {
+			logger.Error(err, "Invalid BackendTrafficPolicy update, will retry with longer delay", "name", policy.Name)
+			return newPermanentError(err)
+		}
 		return err
 	}
 	logger.Info("Updated BackendTrafficPolicy", "name", policy.Name)
@@ -336,6 +408,10 @@ func (r *IngressReconciler) reconcileClientTrafficPolicy(ctx context.Context, in
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			if err := r.Create(ctx, policy); err != nil {
+				if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) {
+					logger.Error(err, "Invalid ClientTrafficPolicy, will retry with longer delay", "name", policy.Name)
+					return newPermanentError(err)
+				}
 				return err
 			}
 			logger.Info("Created ClientTrafficPolicy", "name", policy.Name)
@@ -351,6 +427,10 @@ func (r *IngressReconciler) reconcileClientTrafficPolicy(ctx context.Context, in
 	existing.OwnerReferences = policy.OwnerReferences
 
 	if err := r.Update(ctx, existing); err != nil {
+		if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) {
+			logger.Error(err, "Invalid ClientTrafficPolicy update, will retry with longer delay", "name", policy.Name)
+			return newPermanentError(err)
+		}
 		return err
 	}
 	logger.Info("Updated ClientTrafficPolicy", "name", policy.Name)
@@ -373,6 +453,10 @@ func (r *IngressReconciler) reconcileSecurityPolicy(ctx context.Context, ingress
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			if err := r.Create(ctx, policy); err != nil {
+				if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) {
+					logger.Error(err, "Invalid SecurityPolicy, will retry with longer delay", "name", policy.Name)
+					return newPermanentError(err)
+				}
 				return err
 			}
 			logger.Info("Created SecurityPolicy", "name", policy.Name)
@@ -388,6 +472,10 @@ func (r *IngressReconciler) reconcileSecurityPolicy(ctx context.Context, ingress
 	existing.OwnerReferences = policy.OwnerReferences
 
 	if err := r.Update(ctx, existing); err != nil {
+		if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) {
+			logger.Error(err, "Invalid SecurityPolicy update, will retry with longer delay", "name", policy.Name)
+			return newPermanentError(err)
+		}
 		return err
 	}
 	logger.Info("Updated SecurityPolicy", "name", policy.Name)
@@ -458,6 +546,67 @@ func (r *IngressReconciler) reconcileReferenceGrants(ctx context.Context, ingres
 	}
 
 	return nil
+}
+
+// updateIngressStatus updates the Ingress status with the Gateway's load balancer address.
+// Uses the status subresource to avoid conflicts with spec updates.
+func (r *IngressReconciler) updateIngressStatus(ctx context.Context, ingress *networkingv1.Ingress) error {
+	logger := log.FromContext(ctx)
+
+	// Look up the Gateway to get its addresses
+	gateway := &gatewayv1.Gateway{}
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: r.Config.GatewayNamespace,
+		Name:      r.Config.GatewayName,
+	}, gateway); err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.V(1).Info("Gateway not found, skipping status update")
+			return nil
+		}
+		return err
+	}
+
+	// Build the load balancer ingress list from Gateway addresses
+	var lbIngress []networkingv1.IngressLoadBalancerIngress
+	for _, addr := range gateway.Status.Addresses {
+		ing := networkingv1.IngressLoadBalancerIngress{}
+		if addr.Type != nil && *addr.Type == gatewayv1.HostnameAddressType {
+			ing.Hostname = addr.Value
+		} else {
+			ing.IP = addr.Value
+		}
+		lbIngress = append(lbIngress, ing)
+	}
+
+	// Check if status needs updating
+	if ingressStatusEqual(ingress.Status.LoadBalancer.Ingress, lbIngress) {
+		return nil
+	}
+
+	// Update Ingress status using status subresource
+	ingress.Status.LoadBalancer.Ingress = lbIngress
+	if err := r.Status().Update(ctx, ingress); err != nil {
+		if apierrors.IsConflict(err) {
+			logger.V(1).Info("Conflict updating Ingress status, will be retried")
+		}
+		return err
+	}
+
+	logger.Info("Updated Ingress status", "addresses", len(lbIngress))
+	return nil
+}
+
+// ingressStatusEqual checks if two IngressLoadBalancerIngress slices are equal.
+func ingressStatusEqual(a, b []networkingv1.IngressLoadBalancerIngress) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].IP != b[i].IP || a[i].Hostname != b[i].Hostname {
+			return false
+		}
+	}
+	return true
 }
 
 // SetupWithManager sets up the controller with the Manager.

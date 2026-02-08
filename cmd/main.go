@@ -65,8 +65,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create converter
-	conv := converter.New(cfg)
+	// Create converter with service port resolver
+	resolver := converter.NewServicePortResolver(mgr.GetClient())
+	conv := converter.NewWithResolver(cfg, resolver)
 
 	// Setup controller
 	if err := (&controller.IngressReconciler{

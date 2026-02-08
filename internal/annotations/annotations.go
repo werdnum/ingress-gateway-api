@@ -36,4 +36,7 @@ const (
 
 	// SSL annotations
 	SSLRedirect = Prefix + "ssl-redirect"
+
+	// Path handling annotations
+	UseRegex = Prefix + "use-regex"
 )

@@ -1,6 +1,7 @@
 package converter
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -14,20 +15,32 @@ import (
 
 // Converter converts Ingress resources to HTTPRoutes.
 type Converter struct {
-	cfg *config.Config
+	cfg      *config.Config
+	resolver ServicePortResolver
 }
 
 // New creates a new Converter.
 func New(cfg *config.Config) *Converter {
-	return &Converter{cfg: cfg}
+	return &Converter{
+		cfg:      cfg,
+		resolver: &NoopServicePortResolver{},
+	}
+}
+
+// NewWithResolver creates a new Converter with a service port resolver.
+func NewWithResolver(cfg *config.Config, resolver ServicePortResolver) *Converter {
+	return &Converter{
+		cfg:      cfg,
+		resolver: resolver,
+	}
 }
 
 // ConvertIngress converts an Ingress resource to HTTPRoute(s).
 // It creates one HTTPRoute per host in the Ingress.
 // For backward compatibility, this method does not generate policies.
 // Use ConvertIngressFull for complete conversion including policies.
-func (c *Converter) ConvertIngress(ingress *networkingv1.Ingress) []*gatewayv1.HTTPRoute {
-	result := c.ConvertIngressFull(ingress)
+func (c *Converter) ConvertIngress(ctx context.Context, ingress *networkingv1.Ingress) []*gatewayv1.HTTPRoute {
+	result := c.ConvertIngressFull(ctx, ingress)
 	return result.HTTPRoutes
 }
 
@@ -36,7 +49,7 @@ func (c *Converter) ConvertIngress(ingress *networkingv1.Ingress) []*gatewayv1.H
 // - BackendTrafficPolicy for timeout, load balancer, and body size annotations
 // - ClientTrafficPolicy for buffer size annotation
 // - SecurityPolicy for CORS and ExtAuth annotations
-func (c *Converter) ConvertIngressFull(ingress *networkingv1.Ingress) *ConversionResult {
+func (c *Converter) ConvertIngressFull(ctx context.Context, ingress *networkingv1.Ingress) *ConversionResult {
 	result := &ConversionResult{}
 	annots := annotations.NewAnnotationSet(ingress.Annotations)
 
@@ -51,7 +64,7 @@ func (c *Converter) ConvertIngressFull(ingress *networkingv1.Ingress) *Conversio
 
 	// Create an HTTPRoute for each host
 	for host, paths := range rulesByHost {
-		httpRoute := c.createHTTPRouteWithFilters(ingress, host, paths, annots)
+		httpRoute := c.createHTTPRouteWithFilters(ctx, ingress, host, paths, annots)
 		result.HTTPRoutes = append(result.HTTPRoutes, httpRoute)
 
 		// Generate BackendTrafficPolicy if needed
@@ -60,14 +73,14 @@ func (c *Converter) ConvertIngressFull(ingress *networkingv1.Ingress) *Conversio
 		}
 
 		// Generate SecurityPolicy if needed
-		if sp := c.generateSecurityPolicy(ingress, httpRoute, annots); sp != nil {
+		if sp := c.generateSecurityPolicy(ctx, ingress, httpRoute, annots); sp != nil {
 			result.SecurityPolicies = append(result.SecurityPolicies, sp)
 		}
 	}
 
 	// Handle default backend if present and no other rules
 	if ingress.Spec.DefaultBackend != nil && len(result.HTTPRoutes) == 0 {
-		httpRoute := c.createDefaultBackendRoute(ingress)
+		httpRoute := c.createDefaultBackendRoute(ctx, ingress)
 		result.HTTPRoutes = append(result.HTTPRoutes, httpRoute)
 
 		// Generate BackendTrafficPolicy if needed
@@ -76,7 +89,7 @@ func (c *Converter) ConvertIngressFull(ingress *networkingv1.Ingress) *Conversio
 		}
 
 		// Generate SecurityPolicy if needed
-		if sp := c.generateSecurityPolicy(ingress, httpRoute, annots); sp != nil {
+		if sp := c.generateSecurityPolicy(ctx, ingress, httpRoute, annots); sp != nil {
 			result.SecurityPolicies = append(result.SecurityPolicies, sp)
 		}
 	}
@@ -91,12 +104,12 @@ func (c *Converter) ConvertIngressFull(ingress *networkingv1.Ingress) *Conversio
 
 // createHTTPRoute creates an HTTPRoute for a specific host.
 // This is the legacy method that doesn't apply filters.
-func (c *Converter) createHTTPRoute(ingress *networkingv1.Ingress, host string, paths []networkingv1.HTTPIngressPath) *gatewayv1.HTTPRoute {
-	return c.createHTTPRouteWithFilters(ingress, host, paths, nil)
+func (c *Converter) createHTTPRoute(ctx context.Context, ingress *networkingv1.Ingress, host string, paths []networkingv1.HTTPIngressPath) *gatewayv1.HTTPRoute {
+	return c.createHTTPRouteWithFilters(ctx, ingress, host, paths, nil)
 }
 
 // createHTTPRouteWithFilters creates an HTTPRoute for a specific host with optional filter support.
-func (c *Converter) createHTTPRouteWithFilters(ingress *networkingv1.Ingress, host string, paths []networkingv1.HTTPIngressPath, annots annotations.AnnotationSet) *gatewayv1.HTTPRoute {
+func (c *Converter) createHTTPRouteWithFilters(ctx context.Context, ingress *networkingv1.Ingress, host string, paths []networkingv1.HTTPIngressPath, annots annotations.AnnotationSet) *gatewayv1.HTTPRoute {
 	routeName := c.generateRouteName(ingress, host)
 
 	httpRoute := &gatewayv1.HTTPRoute{
@@ -124,7 +137,7 @@ func (c *Converter) createHTTPRouteWithFilters(ingress *networkingv1.Ingress, ho
 
 	// Convert paths to rules with filters
 	for _, path := range paths {
-		rule := c.convertPathWithFilters(ingress.Namespace, path, annots)
+		rule := c.convertPathWithFilters(ctx, ingress.Namespace, path, annots)
 		httpRoute.Spec.Rules = append(httpRoute.Spec.Rules, rule)
 	}
 
@@ -132,7 +145,7 @@ func (c *Converter) createHTTPRouteWithFilters(ingress *networkingv1.Ingress, ho
 }
 
 // createDefaultBackendRoute creates an HTTPRoute for the default backend.
-func (c *Converter) createDefaultBackendRoute(ingress *networkingv1.Ingress) *gatewayv1.HTTPRoute {
+func (c *Converter) createDefaultBackendRoute(ctx context.Context, ingress *networkingv1.Ingress) *gatewayv1.HTTPRoute {
 	httpRoute := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      ingress.Name,
@@ -151,7 +164,7 @@ func (c *Converter) createDefaultBackendRoute(ingress *networkingv1.Ingress) *ga
 			Rules: []gatewayv1.HTTPRouteRule{
 				{
 					BackendRefs: []gatewayv1.HTTPBackendRef{
-						c.convertBackend(ingress.Namespace, ingress.Spec.DefaultBackend),
+						c.convertBackend(ctx, ingress.Namespace, ingress.Spec.DefaultBackend),
 					},
 				},
 			},
@@ -163,18 +176,18 @@ func (c *Converter) createDefaultBackendRoute(ingress *networkingv1.Ingress) *ga
 
 // convertPath converts an Ingress path to an HTTPRouteRule.
 // This is the legacy method that doesn't apply filters.
-func (c *Converter) convertPath(namespace string, path networkingv1.HTTPIngressPath) gatewayv1.HTTPRouteRule {
-	return c.convertPathWithFilters(namespace, path, nil)
+func (c *Converter) convertPath(ctx context.Context, namespace string, path networkingv1.HTTPIngressPath) gatewayv1.HTTPRouteRule {
+	return c.convertPathWithFilters(ctx, namespace, path, nil)
 }
 
 // convertPathWithFilters converts an Ingress path to an HTTPRouteRule with optional filter support.
-func (c *Converter) convertPathWithFilters(namespace string, path networkingv1.HTTPIngressPath, annots annotations.AnnotationSet) gatewayv1.HTTPRouteRule {
+func (c *Converter) convertPathWithFilters(ctx context.Context, namespace string, path networkingv1.HTTPIngressPath, annots annotations.AnnotationSet) gatewayv1.HTTPRouteRule {
 	rule := gatewayv1.HTTPRouteRule{}
 
 	// Convert path match
 	originalPath := path.Path
 	if originalPath != "" {
-		pathMatch := c.convertPathMatch(path)
+		pathMatch := c.convertPathMatch(path, annots)
 		rule.Matches = []gatewayv1.HTTPRouteMatch{
 			{
 				Path: &pathMatch,
@@ -191,7 +204,7 @@ func (c *Converter) convertPathWithFilters(namespace string, path networkingv1.H
 	// Convert backend (skip if redirect filter is applied)
 	if !hasRedirect {
 		rule.BackendRefs = []gatewayv1.HTTPBackendRef{
-			c.convertIngressBackend(namespace, path.Backend),
+			c.convertIngressBackend(ctx, namespace, path.Backend),
 		}
 	}
 
@@ -199,7 +212,7 @@ func (c *Converter) convertPathWithFilters(namespace string, path networkingv1.H
 }
 
 // convertPathMatch converts an Ingress path type to Gateway API path match.
-func (c *Converter) convertPathMatch(path networkingv1.HTTPIngressPath) gatewayv1.HTTPPathMatch {
+func (c *Converter) convertPathMatch(path networkingv1.HTTPIngressPath, annots annotations.AnnotationSet) gatewayv1.HTTPPathMatch {
 	pathMatch := gatewayv1.HTTPPathMatch{
 		Value: ptr(path.Path),
 	}
@@ -209,29 +222,46 @@ func (c *Converter) convertPathMatch(path networkingv1.HTTPIngressPath) gatewayv
 		pathType = *path.PathType
 	}
 
+	// Check if regex is enabled via annotation
+	useRegex := false
+	if annots != nil {
+		if v, ok := annots.GetBool(annotations.UseRegex); ok && v {
+			useRegex = true
+		}
+	}
+
 	switch pathType {
 	case networkingv1.PathTypeExact:
 		pathMatch.Type = ptr(gatewayv1.PathMatchExact)
 	case networkingv1.PathTypePrefix:
-		pathMatch.Type = ptr(gatewayv1.PathMatchPathPrefix)
+		if useRegex {
+			pathMatch.Type = ptr(gatewayv1.PathMatchRegularExpression)
+		} else {
+			pathMatch.Type = ptr(gatewayv1.PathMatchPathPrefix)
+		}
 	case networkingv1.PathTypeImplementationSpecific:
-		// Default to prefix for implementation-specific
-		pathMatch.Type = ptr(gatewayv1.PathMatchPathPrefix)
+		// For implementation-specific, check if regex is enabled
+		if useRegex {
+			pathMatch.Type = ptr(gatewayv1.PathMatchRegularExpression)
+		} else {
+			pathMatch.Type = ptr(gatewayv1.PathMatchPathPrefix)
+		}
 	}
 
 	return pathMatch
 }
 
 // convertIngressBackend converts an Ingress backend to an HTTPBackendRef.
-func (c *Converter) convertIngressBackend(namespace string, backend networkingv1.IngressBackend) gatewayv1.HTTPBackendRef {
+func (c *Converter) convertIngressBackend(ctx context.Context, namespace string, backend networkingv1.IngressBackend) gatewayv1.HTTPBackendRef {
 	if backend.Service != nil {
+		port := c.resolveServicePort(ctx, namespace, backend.Service.Name, backend.Service.Port)
 		return gatewayv1.HTTPBackendRef{
 			BackendRef: gatewayv1.BackendRef{
 				BackendObjectReference: gatewayv1.BackendObjectReference{
 					Group: ptr(gatewayv1.Group("")),
 					Kind:  ptr(gatewayv1.Kind("Service")),
 					Name:  gatewayv1.ObjectName(backend.Service.Name),
-					Port:  c.convertServicePort(backend.Service.Port),
+					Port:  port,
 				},
 			},
 		}
@@ -258,21 +288,22 @@ func (c *Converter) convertIngressBackend(namespace string, backend networkingv1
 }
 
 // convertBackend converts an IngressBackend to an HTTPBackendRef.
-func (c *Converter) convertBackend(namespace string, backend *networkingv1.IngressBackend) gatewayv1.HTTPBackendRef {
+func (c *Converter) convertBackend(ctx context.Context, namespace string, backend *networkingv1.IngressBackend) gatewayv1.HTTPBackendRef {
 	if backend == nil {
 		return gatewayv1.HTTPBackendRef{}
 	}
-	return c.convertIngressBackend(namespace, *backend)
+	return c.convertIngressBackend(ctx, namespace, *backend)
 }
 
-// convertServicePort converts an Ingress service port to a Gateway API port.
-func (c *Converter) convertServicePort(port networkingv1.ServiceBackendPort) *gatewayv1.PortNumber {
-	if port.Number != 0 {
-		return ptr(gatewayv1.PortNumber(port.Number))
+// resolveServicePort resolves a service port (named or numeric) to a Gateway API port number.
+func (c *Converter) resolveServicePort(ctx context.Context, namespace, serviceName string, port networkingv1.ServiceBackendPort) *gatewayv1.PortNumber {
+	resolved, err := c.resolver.ResolvePort(ctx, namespace, serviceName, port.Name, port.Number)
+	if err != nil {
+		// Log error but continue - the HTTPRoute will fail validation
+		// which is better than silently dropping the backend
+		return nil
 	}
-	// Named ports are not directly supported in Gateway API BackendRef
-	// The service will need to be resolved by the gateway implementation
-	return nil
+	return ptr(gatewayv1.PortNumber(resolved))
 }
 
 // createParentRef creates a ParentReference to the shared Gateway.

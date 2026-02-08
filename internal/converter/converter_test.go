@@ -1,6 +1,7 @@
 package converter
 
 import (
+	"context"
 	"testing"
 
 	networkingv1 "k8s.io/api/networking/v1"
@@ -222,11 +223,66 @@ func TestConvertIngress(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "regex path with use-regex annotation",
+			ingress: &networkingv1.Ingress{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "regex-ingress",
+					Namespace: "default",
+					UID:       types.UID("test-uid-5"),
+					Annotations: map[string]string{
+						"nginx.ingress.kubernetes.io/use-regex": "true",
+					},
+				},
+				Spec: networkingv1.IngressSpec{
+					Rules: []networkingv1.IngressRule{
+						{
+							Host: "example.com",
+							IngressRuleValue: networkingv1.IngressRuleValue{
+								HTTP: &networkingv1.HTTPIngressRuleValue{
+									Paths: []networkingv1.HTTPIngressPath{
+										{
+											Path:     "/api/v[0-9]+/.*",
+											PathType: ptr(networkingv1.PathTypeImplementationSpecific),
+											Backend: networkingv1.IngressBackend{
+												Service: &networkingv1.IngressServiceBackend{
+													Name: "api-service",
+													Port: networkingv1.ServiceBackendPort{
+														Number: 80,
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedRoutes: 1,
+			checkFunc: func(t *testing.T, routes []*gatewayv1.HTTPRoute) {
+				route := routes[0]
+				if len(route.Spec.Rules) != 1 {
+					t.Fatalf("expected 1 rule, got %d", len(route.Spec.Rules))
+				}
+				if len(route.Spec.Rules[0].Matches) != 1 {
+					t.Fatalf("expected 1 match, got %d", len(route.Spec.Rules[0].Matches))
+				}
+				pathMatch := route.Spec.Rules[0].Matches[0].Path
+				if pathMatch == nil || *pathMatch.Type != gatewayv1.PathMatchRegularExpression {
+					t.Errorf("expected regex path match, got %v", pathMatch)
+				}
+				if *pathMatch.Value != "/api/v[0-9]+/.*" {
+					t.Errorf("expected path /api/v[0-9]+/.*, got %s", *pathMatch.Value)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			routes := conv.ConvertIngress(tt.ingress)
+			routes := conv.ConvertIngress(context.Background(), tt.ingress)
 			if len(routes) != tt.expectedRoutes {
 				t.Errorf("expected %d routes, got %d", tt.expectedRoutes, len(routes))
 			}
