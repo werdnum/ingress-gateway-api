@@ -1,0 +1,39 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Build artifacts
+bin/
+dist/
+*.exe
+
+# Test artifacts
+coverage.out
+*.test
+
+# Documentation
+*.md
+LICENSE
+
+# Helm charts (not needed for binary build)
+charts/
+
+# Local development
+.env
+.envrc
+*.local
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+Makefile
+
+# Docker
+Dockerfile
+.dockerignore
