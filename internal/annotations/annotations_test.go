@@ -105,46 +105,46 @@ func TestGetDuration(t *testing.T) {
 
 func TestGetQuantity(t *testing.T) {
 	tests := []struct {
-		name       string
-		annots     map[string]string
-		key        string
-		wantValue  string
-		wantOK     bool
+		name      string
+		annots    map[string]string
+		key       string
+		wantValue string
+		wantOK    bool
 	}{
 		{
-			name:       "nginx format lowercase k",
-			annots:     map[string]string{ProxyBufferSize: "4k"},
-			key:        ProxyBufferSize,
-			wantValue:  "4Ki",
-			wantOK:     true,
+			name:      "nginx format lowercase k",
+			annots:    map[string]string{ProxyBufferSize: "4k"},
+			key:       ProxyBufferSize,
+			wantValue: "4Ki",
+			wantOK:    true,
 		},
 		{
-			name:       "nginx format lowercase m",
-			annots:     map[string]string{ProxyBodySize: "16m"},
-			key:        ProxyBodySize,
-			wantValue:  "16Mi",
-			wantOK:     true,
+			name:      "nginx format lowercase m",
+			annots:    map[string]string{ProxyBodySize: "16m"},
+			key:       ProxyBodySize,
+			wantValue: "16Mi",
+			wantOK:    true,
 		},
 		{
-			name:       "kubernetes format",
-			annots:     map[string]string{ProxyBufferSize: "4Ki"},
-			key:        ProxyBufferSize,
-			wantValue:  "4Ki",
-			wantOK:     true,
+			name:      "kubernetes format",
+			annots:    map[string]string{ProxyBufferSize: "4Ki"},
+			key:       ProxyBufferSize,
+			wantValue: "4Ki",
+			wantOK:    true,
 		},
 		{
-			name:       "plain number",
-			annots:     map[string]string{ProxyBufferSize: "4096"},
-			key:        ProxyBufferSize,
-			wantValue:  "4096",
-			wantOK:     true,
+			name:      "plain number",
+			annots:    map[string]string{ProxyBufferSize: "4096"},
+			key:       ProxyBufferSize,
+			wantValue: "4096",
+			wantOK:    true,
 		},
 		{
-			name:       "invalid value",
-			annots:     map[string]string{ProxyBufferSize: "invalid"},
-			key:        ProxyBufferSize,
-			wantValue:  "",
-			wantOK:     false,
+			name:      "invalid value",
+			annots:    map[string]string{ProxyBufferSize: "invalid"},
+			key:       ProxyBufferSize,
+			wantValue: "",
+			wantOK:    false,
 		},
 	}
 
@@ -175,29 +175,29 @@ func TestGetBool(t *testing.T) {
 	}{
 		{
 			name:      "true",
-			annots:    map[string]string{SSLRedirect: "true"},
-			key:       SSLRedirect,
+			annots:    map[string]string{CORSEnabled: "true"},
+			key:       CORSEnabled,
 			wantValue: true,
 			wantOK:    true,
 		},
 		{
 			name:      "false",
-			annots:    map[string]string{SSLRedirect: "false"},
-			key:       SSLRedirect,
+			annots:    map[string]string{CORSEnabled: "false"},
+			key:       CORSEnabled,
 			wantValue: false,
 			wantOK:    true,
 		},
 		{
 			name:      "1",
-			annots:    map[string]string{SSLRedirect: "1"},
-			key:       SSLRedirect,
+			annots:    map[string]string{CORSEnabled: "1"},
+			key:       CORSEnabled,
 			wantValue: true,
 			wantOK:    true,
 		},
 		{
 			name:      "invalid",
-			annots:    map[string]string{SSLRedirect: "invalid"},
-			key:       SSLRedirect,
+			annots:    map[string]string{CORSEnabled: "invalid"},
+			key:       CORSEnabled,
 			wantValue: false,
 			wantOK:    false,
 		},
@@ -393,16 +393,6 @@ func TestHasHTTPRouteFilters(t *testing.T) {
 			name:   "has app-root",
 			annots: map[string]string{AppRoot: "/app"},
 			want:   true,
-		},
-		{
-			name:   "has ssl-redirect",
-			annots: map[string]string{SSLRedirect: "true"},
-			want:   true,
-		},
-		{
-			name:   "ssl-redirect false",
-			annots: map[string]string{SSLRedirect: "false"},
-			want:   false,
 		},
 		{
 			name:   "no filters",

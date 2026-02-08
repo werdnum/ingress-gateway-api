@@ -257,14 +257,6 @@ func (a AnnotationSet) HasAppRoot() bool {
 	return ok
 }
 
-// HasSSLRedirect returns true if ssl-redirect annotation is present and true.
-func (a AnnotationSet) HasSSLRedirect() bool {
-	if val, ok := a.GetBool(SSLRedirect); ok && val {
-		return true
-	}
-	return false
-}
-
 // HasBackendTrafficPolicyAnnotations returns true if any BackendTrafficPolicy annotation is present.
 func (a AnnotationSet) HasBackendTrafficPolicyAnnotations() bool {
 	return a.HasTimeout() || a.HasLoadBalancer() || a.has(ProxyBodySize)
@@ -282,7 +274,7 @@ func (a AnnotationSet) HasSecurityPolicyAnnotations() bool {
 
 // HasHTTPRouteFilters returns true if any HTTPRoute filter annotation is present.
 func (a AnnotationSet) HasHTTPRouteFilters() bool {
-	return a.HasRewrite() || a.HasAppRoot() || a.HasSSLRedirect()
+	return a.HasRewrite() || a.HasAppRoot()
 }
 
 // HasBackendTLSPolicy returns true if backend-protocol annotation is set to HTTPS.

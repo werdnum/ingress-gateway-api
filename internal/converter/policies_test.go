@@ -251,11 +251,11 @@ func TestGenerateSecurityPolicy(t *testing.T) {
 		{
 			name: "CORS annotations",
 			annotations: map[string]string{
-				"nginx.ingress.kubernetes.io/enable-cors":          "true",
-				"nginx.ingress.kubernetes.io/cors-allow-origin":    "https://example.com",
-				"nginx.ingress.kubernetes.io/cors-allow-methods":   "GET,POST",
-				"nginx.ingress.kubernetes.io/cors-allow-headers":   "Content-Type",
-				"nginx.ingress.kubernetes.io/cors-max-age":         "3600",
+				"nginx.ingress.kubernetes.io/enable-cors":        "true",
+				"nginx.ingress.kubernetes.io/cors-allow-origin":  "https://example.com",
+				"nginx.ingress.kubernetes.io/cors-allow-methods": "GET,POST",
+				"nginx.ingress.kubernetes.io/cors-allow-headers": "Content-Type",
+				"nginx.ingress.kubernetes.io/cors-max-age":       "3600",
 			},
 			wantPolicy: true,
 			wantCORS:   true,

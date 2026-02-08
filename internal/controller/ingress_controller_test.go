@@ -92,9 +92,9 @@ func TestIngressReconciler_ShouldProcess(t *testing.T) {
 
 func TestIngressReconciler_GetIngressClass(t *testing.T) {
 	tests := []struct {
-		name           string
-		ingress        *networkingv1.Ingress
-		expectedClass  string
+		name          string
+		ingress       *networkingv1.Ingress
+		expectedClass string
 	}{
 		{
 			name: "spec ingress class",

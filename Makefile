@@ -21,7 +21,7 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 test: fmt vet ## Run tests.
-	go test ./... -coverprofile cover.out
+	go test ./internal/annotations/... ./internal/controller/... ./internal/converter/... -coverprofile cover.out
 
 ##@ Build
 

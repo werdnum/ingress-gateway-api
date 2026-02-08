@@ -105,33 +105,10 @@ func addAppRootRedirect(rule *gatewayv1.HTTPRouteRule, annots annotations.Annota
 	}
 }
 
-// addSSLRedirectFilter adds a RequestRedirect filter for HTTP to HTTPS redirect.
-func addSSLRedirectFilter(rule *gatewayv1.HTTPRouteRule, annots annotations.AnnotationSet) {
-	if !annots.HasSSLRedirect() {
-		return
-	}
-
-	filter := gatewayv1.HTTPRouteFilter{
-		Type: gatewayv1.HTTPRouteFilterRequestRedirect,
-		RequestRedirect: &gatewayv1.HTTPRequestRedirectFilter{
-			Scheme:     ptr("https"),
-			StatusCode: ptr(301),
-		},
-	}
-
-	rule.Filters = append(rule.Filters, filter)
-}
-
 // applyFilters applies all annotation-based filters to an HTTPRoute rule.
 // Returns true if any redirect filter was applied (meaning backend refs should be removed).
 func applyFilters(rule *gatewayv1.HTTPRouteRule, annots annotations.AnnotationSet, originalPath string) bool {
 	hasRedirect := false
-
-	// Check for SSL redirect first - if enabled, no other filters or backends needed
-	if annots.HasSSLRedirect() {
-		addSSLRedirectFilter(rule, annots)
-		hasRedirect = true
-	}
 
 	// Check for app root redirect on root path
 	if annots.HasAppRoot() {

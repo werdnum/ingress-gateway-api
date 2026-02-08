@@ -133,67 +133,6 @@ func TestAddAppRootRedirect(t *testing.T) {
 	}
 }
 
-func TestAddSSLRedirectFilter(t *testing.T) {
-	tests := []struct {
-		name        string
-		sslRedirect string
-		wantFilter  bool
-	}{
-		{
-			name:        "ssl redirect true",
-			sslRedirect: "true",
-			wantFilter:  true,
-		},
-		{
-			name:        "ssl redirect false",
-			sslRedirect: "false",
-			wantFilter:  false,
-		},
-		{
-			name:        "no ssl redirect annotation",
-			sslRedirect: "",
-			wantFilter:  false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rule := &gatewayv1.HTTPRouteRule{}
-			annots := map[string]string{}
-			if tt.sslRedirect != "" {
-				annots["nginx.ingress.kubernetes.io/ssl-redirect"] = tt.sslRedirect
-			}
-			as := annotations.NewAnnotationSet(annots)
-
-			addSSLRedirectFilter(rule, as)
-
-			if tt.wantFilter && len(rule.Filters) == 0 {
-				t.Error("expected filter to be added")
-			}
-			if !tt.wantFilter && len(rule.Filters) > 0 {
-				t.Error("expected no filter to be added")
-			}
-
-			if tt.wantFilter && len(rule.Filters) > 0 {
-				filter := rule.Filters[0]
-				if filter.Type != gatewayv1.HTTPRouteFilterRequestRedirect {
-					t.Errorf("expected RequestRedirect filter, got %s", filter.Type)
-				}
-				if filter.RequestRedirect == nil {
-					t.Error("expected redirect config")
-					return
-				}
-				if filter.RequestRedirect.Scheme == nil || *filter.RequestRedirect.Scheme != "https" {
-					t.Error("expected scheme to be https")
-				}
-				if filter.RequestRedirect.StatusCode == nil || *filter.RequestRedirect.StatusCode != 301 {
-					t.Error("expected status code 301")
-				}
-			}
-		})
-	}
-}
-
 func TestApplyFilters(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -206,15 +145,6 @@ func TestApplyFilters(t *testing.T) {
 			annotations:  map[string]string{},
 			wantFilters:  0,
 			wantRedirect: false,
-		},
-		{
-			name: "ssl redirect takes priority",
-			annotations: map[string]string{
-				"nginx.ingress.kubernetes.io/ssl-redirect":   "true",
-				"nginx.ingress.kubernetes.io/rewrite-target": "/",
-			},
-			wantFilters:  1,
-			wantRedirect: true,
 		},
 		{
 			name: "rewrite only",

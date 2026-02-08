@@ -34,9 +34,6 @@ const (
 	RewriteTarget = Prefix + "rewrite-target"
 	AppRoot       = Prefix + "app-root"
 
-	// SSL annotations
-	SSLRedirect = Prefix + "ssl-redirect"
-
 	// Path handling annotations
 	UseRegex = Prefix + "use-regex"
 
