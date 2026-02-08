@@ -179,6 +179,11 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
+	// Clean up stale resources that are no longer needed
+	if err := r.cleanupStaleResources(ctx, &ingress, result); err != nil {
+		return handleReconcileError(err)
+	}
+
 	// Update Ingress status with Gateway address
 	if err := r.updateIngressStatus(ctx, &ingress); err != nil {
 		logger.Error(err, "failed to update Ingress status")
@@ -243,6 +248,118 @@ func (r *IngressReconciler) handleDeletion(ctx context.Context, ingress *network
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// cleanupStaleResources deletes any owned resources that are no longer needed.
+// This handles the case where an annotation is removed and the corresponding resource should be deleted.
+func (r *IngressReconciler) cleanupStaleResources(ctx context.Context, ingress *networkingv1.Ingress, result *converter.ConversionResult) error {
+	logger := log.FromContext(ctx)
+	sourceRef := fmt.Sprintf("%s/%s", ingress.Namespace, ingress.Name)
+
+	// Build sets of expected resource names
+	expectedHTTPRoutes := make(map[string]struct{})
+	for _, route := range result.HTTPRoutes {
+		expectedHTTPRoutes[route.Name] = struct{}{}
+	}
+
+	expectedBTPs := make(map[string]struct{})
+	for _, btp := range result.BackendTrafficPolicies {
+		expectedBTPs[btp.Name] = struct{}{}
+	}
+
+	expectedSPs := make(map[string]struct{})
+	for _, sp := range result.SecurityPolicies {
+		expectedSPs[sp.Name] = struct{}{}
+	}
+
+	expectedBTLSs := make(map[string]struct{})
+	for _, btls := range result.BackendTLSPolicies {
+		// BackendTLSPolicies may be in different namespaces, use namespace/name as key
+		expectedBTLSs[fmt.Sprintf("%s/%s", btls.Namespace, btls.Name)] = struct{}{}
+	}
+
+	// Clean up stale HTTPRoutes
+	var httpRoutes gatewayv1.HTTPRouteList
+	if err := r.List(ctx, &httpRoutes, client.InNamespace(ingress.Namespace)); err != nil {
+		return err
+	}
+	for _, route := range httpRoutes.Items {
+		if route.Annotations[SourceAnnotation] == sourceRef {
+			if _, expected := expectedHTTPRoutes[route.Name]; !expected {
+				if err := r.Delete(ctx, &route); err != nil && !apierrors.IsNotFound(err) {
+					return err
+				}
+				logger.Info("Deleted stale HTTPRoute", "name", route.Name)
+			}
+		}
+	}
+
+	// Clean up stale BackendTrafficPolicies
+	var btpList egv1alpha1.BackendTrafficPolicyList
+	if err := r.List(ctx, &btpList, client.InNamespace(ingress.Namespace)); err != nil {
+		return err
+	}
+	for _, btp := range btpList.Items {
+		if btp.Annotations[SourceAnnotation] == sourceRef {
+			if _, expected := expectedBTPs[btp.Name]; !expected {
+				if err := r.Delete(ctx, &btp); err != nil && !apierrors.IsNotFound(err) {
+					return err
+				}
+				logger.Info("Deleted stale BackendTrafficPolicy", "name", btp.Name)
+			}
+		}
+	}
+
+	// Clean up stale ClientTrafficPolicy (only one per Ingress, delete if not expected)
+	var ctpList egv1alpha1.ClientTrafficPolicyList
+	if err := r.List(ctx, &ctpList, client.InNamespace(ingress.Namespace)); err != nil {
+		return err
+	}
+	for _, ctp := range ctpList.Items {
+		if ctp.Annotations[SourceAnnotation] == sourceRef {
+			if result.ClientTrafficPolicy == nil || ctp.Name != result.ClientTrafficPolicy.Name {
+				if err := r.Delete(ctx, &ctp); err != nil && !apierrors.IsNotFound(err) {
+					return err
+				}
+				logger.Info("Deleted stale ClientTrafficPolicy", "name", ctp.Name)
+			}
+		}
+	}
+
+	// Clean up stale SecurityPolicies
+	var spList egv1alpha1.SecurityPolicyList
+	if err := r.List(ctx, &spList, client.InNamespace(ingress.Namespace)); err != nil {
+		return err
+	}
+	for _, sp := range spList.Items {
+		if sp.Annotations[SourceAnnotation] == sourceRef {
+			if _, expected := expectedSPs[sp.Name]; !expected {
+				if err := r.Delete(ctx, &sp); err != nil && !apierrors.IsNotFound(err) {
+					return err
+				}
+				logger.Info("Deleted stale SecurityPolicy", "name", sp.Name)
+			}
+		}
+	}
+
+	// Clean up stale BackendTLSPolicies
+	var btlsList gatewayv1.BackendTLSPolicyList
+	if err := r.List(ctx, &btlsList, client.InNamespace(ingress.Namespace)); err != nil {
+		return err
+	}
+	for _, btls := range btlsList.Items {
+		if btls.Annotations[SourceAnnotation] == sourceRef {
+			key := fmt.Sprintf("%s/%s", btls.Namespace, btls.Name)
+			if _, expected := expectedBTLSs[key]; !expected {
+				if err := r.Delete(ctx, &btls); err != nil && !apierrors.IsNotFound(err) {
+					return err
+				}
+				logger.Info("Deleted stale BackendTLSPolicy", "name", btls.Name, "namespace", btls.Namespace)
+			}
+		}
+	}
+
+	return nil
 }
 
 // deleteOwnedHTTPRoutes deletes HTTPRoutes owned by the Ingress.
