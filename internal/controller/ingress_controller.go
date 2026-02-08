@@ -126,6 +126,11 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				logger.V(1).Info("Conflict adding Ingress finalizer, will retry")
 				return ctrl.Result{Requeue: true}, nil
 			}
+			if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) {
+				// Ingress fails validation (e.g., predates webhook), skip it
+				logger.Info("Ingress fails validation, skipping", "error", err.Error())
+				return ctrl.Result{RequeueAfter: permanentRequeueDelay}, nil
+			}
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil
