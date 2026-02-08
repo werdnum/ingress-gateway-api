@@ -278,6 +278,72 @@ func TestConvertIngress(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "regex path with rewrite-target capture group converts to PathPrefix",
+			ingress: &networkingv1.Ingress{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "rewrite-regex-ingress",
+					Namespace: "default",
+					UID:       types.UID("test-uid-6"),
+					Annotations: map[string]string{
+						"nginx.ingress.kubernetes.io/use-regex":      "true",
+						"nginx.ingress.kubernetes.io/rewrite-target": "/$2",
+					},
+				},
+				Spec: networkingv1.IngressSpec{
+					Rules: []networkingv1.IngressRule{
+						{
+							Host: "example.com",
+							IngressRuleValue: networkingv1.IngressRuleValue{
+								HTTP: &networkingv1.HTTPIngressRuleValue{
+									Paths: []networkingv1.HTTPIngressPath{
+										{
+											Path:     "/data(/|$)(.*)",
+											PathType: ptr(networkingv1.PathTypePrefix),
+											Backend: networkingv1.IngressBackend{
+												Service: &networkingv1.IngressServiceBackend{
+													Name: "data-service",
+													Port: networkingv1.ServiceBackendPort{
+														Number: 80,
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedRoutes: 1,
+			checkFunc: func(t *testing.T, routes []*gatewayv1.HTTPRoute) {
+				route := routes[0]
+				if len(route.Spec.Rules) != 1 {
+					t.Fatalf("expected 1 rule, got %d", len(route.Spec.Rules))
+				}
+				if len(route.Spec.Rules[0].Matches) != 1 {
+					t.Fatalf("expected 1 match, got %d", len(route.Spec.Rules[0].Matches))
+				}
+				pathMatch := route.Spec.Rules[0].Matches[0].Path
+				// Should be PathPrefix, not regex, because rewrite-target has capture groups
+				if pathMatch == nil || *pathMatch.Type != gatewayv1.PathMatchPathPrefix {
+					t.Errorf("expected PathPrefix match for rewrite with capture groups, got %v", pathMatch.Type)
+				}
+				// Path should be the extracted static prefix
+				if *pathMatch.Value != "/data" {
+					t.Errorf("expected path /data, got %s", *pathMatch.Value)
+				}
+				// Should have a URLRewrite filter
+				if len(route.Spec.Rules[0].Filters) != 1 {
+					t.Fatalf("expected 1 filter, got %d", len(route.Spec.Rules[0].Filters))
+				}
+				filter := route.Spec.Rules[0].Filters[0]
+				if filter.Type != gatewayv1.HTTPRouteFilterURLRewrite {
+					t.Errorf("expected URLRewrite filter, got %v", filter.Type)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -379,6 +445,32 @@ func TestGenerateRouteName(t *testing.T) {
 			result := conv.generateRouteName(ingress, tt.host)
 			if result != tt.expectedName {
 				t.Errorf("expected %s, got %s", tt.expectedName, result)
+			}
+		})
+	}
+}
+
+func TestExtractStaticPrefix(t *testing.T) {
+	tests := []struct {
+		regexPath string
+		want      string
+	}{
+		{"/data(/|$)(.*)", "/data"},
+		{"/()(.*)", "/"},
+		{"/api/v1(/|$)(.*)", "/api/v1"},
+		{"/auth/realms(/|$)(.*)", "/auth/realms"},
+		{"/foo/bar", "/foo/bar"},
+		{"", "/"},
+		{"/", "/"},
+		{"/prefix(.*)", "/prefix"},
+		{"/with[0-9]+regex", "/with"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.regexPath, func(t *testing.T) {
+			got := extractStaticPrefix(tt.regexPath)
+			if got != tt.want {
+				t.Errorf("extractStaticPrefix(%q) = %q, want %q", tt.regexPath, got, tt.want)
 			}
 		})
 	}

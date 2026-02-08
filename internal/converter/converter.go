@@ -213,10 +213,7 @@ func (c *Converter) convertPathWithFilters(ctx context.Context, namespace string
 
 // convertPathMatch converts an Ingress path type to Gateway API path match.
 func (c *Converter) convertPathMatch(path networkingv1.HTTPIngressPath, annots annotations.AnnotationSet) gatewayv1.HTTPPathMatch {
-	pathMatch := gatewayv1.HTTPPathMatch{
-		Value: ptr(path.Path),
-	}
-
+	pathValue := path.Path
 	pathType := networkingv1.PathTypePrefix
 	if path.PathType != nil {
 		pathType = *path.PathType
@@ -228,6 +225,26 @@ func (c *Converter) convertPathMatch(path networkingv1.HTTPIngressPath, annots a
 		if v, ok := annots.GetBool(annotations.UseRegex); ok && v {
 			useRegex = true
 		}
+	}
+
+	// Check if rewrite-target with capture groups is used
+	// In this case, we need to use PathPrefix match (not regex) for Gateway API compatibility
+	hasRewriteWithCapture := false
+	if annots != nil {
+		if rewrite, ok := annots.GetString(annotations.RewriteTarget); ok {
+			hasRewriteWithCapture = containsCaptureGroups(rewrite)
+		}
+	}
+
+	// If using regex path with rewrite capture groups, extract the static prefix
+	// Gateway API requires PathPrefix match when using ReplacePrefixMatch
+	if useRegex && hasRewriteWithCapture {
+		pathValue = extractStaticPrefix(path.Path)
+		useRegex = false // Force PathPrefix match
+	}
+
+	pathMatch := gatewayv1.HTTPPathMatch{
+		Value: ptr(pathValue),
 	}
 
 	switch pathType {
@@ -249,6 +266,38 @@ func (c *Converter) convertPathMatch(path networkingv1.HTTPIngressPath, annots a
 	}
 
 	return pathMatch
+}
+
+// extractStaticPrefix extracts the static prefix from a regex path.
+// Examples:
+//   - /data(/|$)(.*) → /data
+//   - /()(.*) → /
+//   - /api/v[0-9]+/(.*) → /api/v (best effort)
+func extractStaticPrefix(regexPath string) string {
+	if regexPath == "" {
+		return "/"
+	}
+
+	// Find where the regex pattern starts
+	// Common patterns: (, [, *, +, ?, {, |, \, $
+	regexChars := []byte{'(', '[', '*', '+', '?', '{', '|', '\\', '$'}
+
+	minIdx := len(regexPath)
+	for _, ch := range regexChars {
+		if idx := strings.IndexByte(regexPath, ch); idx >= 0 && idx < minIdx {
+			minIdx = idx
+		}
+	}
+
+	prefix := regexPath[:minIdx]
+
+	// Clean up trailing slashes but keep at least "/"
+	prefix = strings.TrimRight(prefix, "/")
+	if prefix == "" {
+		prefix = "/"
+	}
+
+	return prefix
 }
 
 // convertIngressBackend converts an Ingress backend to an HTTPBackendRef.

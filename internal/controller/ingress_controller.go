@@ -118,10 +118,11 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// Add finalizer if not present
 	if !controllerutil.ContainsFinalizer(&ingress, FinalizerName) {
+		patch := client.MergeFrom(ingress.DeepCopy())
 		controllerutil.AddFinalizer(&ingress, FinalizerName)
-		if err := r.Update(ctx, &ingress); err != nil {
+		if err := r.Patch(ctx, &ingress, patch); err != nil {
 			if apierrors.IsConflict(err) {
-				logger.V(1).Info("Conflict updating Ingress finalizer, will retry")
+				logger.V(1).Info("Conflict adding Ingress finalizer, will retry")
 				return ctrl.Result{Requeue: true}, nil
 			}
 			return ctrl.Result{}, err
@@ -214,9 +215,10 @@ func (r *IngressReconciler) handleDeletion(ctx context.Context, ingress *network
 			return ctrl.Result{}, err
 		}
 
-		// Remove finalizer
+		// Remove finalizer using patch to avoid triggering admission webhooks
+		patch := client.MergeFrom(ingress.DeepCopy())
 		controllerutil.RemoveFinalizer(ingress, FinalizerName)
-		if err := r.Update(ctx, ingress); err != nil {
+		if err := r.Patch(ctx, ingress, patch); err != nil {
 			if apierrors.IsConflict(err) {
 				logger.V(1).Info("Conflict removing finalizer, will retry")
 				return ctrl.Result{Requeue: true}, nil
