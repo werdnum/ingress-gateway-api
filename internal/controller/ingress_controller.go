@@ -86,6 +86,7 @@ type IngressReconciler struct {
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=backendtrafficpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=clienttrafficpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=securitypolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=backendtlspolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services;secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 
@@ -166,6 +167,13 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
+	// Reconcile BackendTLSPolicies
+	for _, btp := range result.BackendTLSPolicies {
+		if err := r.reconcileBackendTLSPolicy(ctx, &ingress, btp); err != nil {
+			return handleReconcileError(err)
+		}
+	}
+
 	// Update Ingress status with Gateway address
 	if err := r.updateIngressStatus(ctx, &ingress); err != nil {
 		logger.Error(err, "failed to update Ingress status")
@@ -176,6 +184,7 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		"httpRoutes", len(result.HTTPRoutes),
 		"backendTrafficPolicies", len(result.BackendTrafficPolicies),
 		"securityPolicies", len(result.SecurityPolicies),
+		"backendTLSPolicies", len(result.BackendTLSPolicies),
 		"hasClientTrafficPolicy", result.ClientTrafficPolicy != nil)
 	return ctrl.Result{}, nil
 }
@@ -297,6 +306,21 @@ func (r *IngressReconciler) deleteOwnedPolicies(ctx context.Context, ingress *ne
 				return err
 			}
 			logger.Info("Deleted SecurityPolicy", "name", sp.Name)
+		}
+	}
+
+	// Delete BackendTLSPolicies - these may be in different namespaces
+	// First, list in the Ingress namespace
+	var btlsList gatewayv1.BackendTLSPolicyList
+	if err := r.List(ctx, &btlsList, client.InNamespace(ingress.Namespace)); err != nil {
+		return err
+	}
+	for _, btls := range btlsList.Items {
+		if btls.Annotations[SourceAnnotation] == sourceRef {
+			if err := r.Delete(ctx, &btls); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+			logger.Info("Deleted BackendTLSPolicy", "name", btls.Name, "namespace", btls.Namespace)
 		}
 	}
 
@@ -484,6 +508,48 @@ func (r *IngressReconciler) reconcileSecurityPolicy(ctx context.Context, ingress
 	return nil
 }
 
+// reconcileBackendTLSPolicy creates or updates a BackendTLSPolicy.
+func (r *IngressReconciler) reconcileBackendTLSPolicy(ctx context.Context, ingress *networkingv1.Ingress, policy *gatewayv1.BackendTLSPolicy) error {
+	logger := log.FromContext(ctx)
+
+	// Set owner reference
+	converter.SetBackendTLSPolicyOwnerReference(policy, ingress)
+
+	// Check if policy exists
+	existing := &gatewayv1.BackendTLSPolicy{}
+	err := r.Get(ctx, client.ObjectKeyFromObject(policy), existing)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			if err := r.Create(ctx, policy); err != nil {
+				if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) {
+					logger.Error(err, "Invalid BackendTLSPolicy, will retry with longer delay", "name", policy.Name)
+					return newPermanentError(err)
+				}
+				return err
+			}
+			logger.Info("Created BackendTLSPolicy", "name", policy.Name, "namespace", policy.Namespace)
+			return nil
+		}
+		return err
+	}
+
+	// Update existing policy
+	existing.Spec = policy.Spec
+	existing.Annotations = policy.Annotations
+	existing.Labels = policy.Labels
+	existing.OwnerReferences = policy.OwnerReferences
+
+	if err := r.Update(ctx, existing); err != nil {
+		if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) {
+			logger.Error(err, "Invalid BackendTLSPolicy update, will retry with longer delay", "name", policy.Name)
+			return newPermanentError(err)
+		}
+		return err
+	}
+	logger.Info("Updated BackendTLSPolicy", "name", policy.Name, "namespace", policy.Namespace)
+	return nil
+}
+
 // reconcileReferenceGrants creates ReferenceGrants for cross-namespace backend references.
 func (r *IngressReconciler) reconcileReferenceGrants(ctx context.Context, ingress *networkingv1.Ingress, httpRoutes []*gatewayv1.HTTPRoute) error {
 	logger := log.FromContext(ctx)
@@ -619,5 +685,6 @@ func (r *IngressReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&egv1alpha1.BackendTrafficPolicy{}).
 		Owns(&egv1alpha1.ClientTrafficPolicy{}).
 		Owns(&egv1alpha1.SecurityPolicy{}).
+		Owns(&gatewayv1.BackendTLSPolicy{}).
 		Complete(r)
 }

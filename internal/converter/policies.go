@@ -371,3 +371,126 @@ func SetPolicyOwnerReference(obj metav1.Object, ingress *networkingv1.Ingress) {
 		},
 	})
 }
+
+// SetBackendTLSPolicyOwnerReference sets the owner reference on a BackendTLSPolicy resource.
+func SetBackendTLSPolicyOwnerReference(policy *gatewayv1.BackendTLSPolicy, ingress *networkingv1.Ingress) {
+	policy.SetOwnerReferences([]metav1.OwnerReference{
+		{
+			APIVersion:         "networking.k8s.io/v1",
+			Kind:               "Ingress",
+			Name:               ingress.Name,
+			UID:                ingress.UID,
+			Controller:         ptr(true),
+			BlockOwnerDeletion: ptr(true),
+		},
+	})
+}
+
+// generateBackendTLSPolicies creates BackendTLSPolicy resources for backend services
+// when the backend-protocol: HTTPS annotation is present.
+// One BackendTLSPolicy is created per unique backend service.
+func (c *Converter) generateBackendTLSPolicies(
+	ingress *networkingv1.Ingress,
+	httpRoutes []*gatewayv1.HTTPRoute,
+	annots annotations.AnnotationSet,
+) []*gatewayv1.BackendTLSPolicy {
+	if !annots.HasBackendTLSPolicy() {
+		return nil
+	}
+
+	// Collect unique backend services from all HTTPRoutes
+	type serviceKey struct {
+		namespace string
+		name      string
+	}
+	seen := make(map[serviceKey]bool)
+	var policies []*gatewayv1.BackendTLSPolicy
+
+	for _, httpRoute := range httpRoutes {
+		for _, rule := range httpRoute.Spec.Rules {
+			for _, backendRef := range rule.BackendRefs {
+				// Only handle Service backends
+				if backendRef.Kind != nil && *backendRef.Kind != "Service" {
+					continue
+				}
+
+				// Determine namespace
+				ns := ingress.Namespace
+				if backendRef.Namespace != nil {
+					ns = string(*backendRef.Namespace)
+				}
+
+				key := serviceKey{namespace: ns, name: string(backendRef.Name)}
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+
+				// Create BackendTLSPolicy for this service
+				policy := &gatewayv1.BackendTLSPolicy{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      fmt.Sprintf("%s-tls", backendRef.Name),
+						Namespace: ns,
+						Labels:    copyLabels(ingress.Labels),
+						Annotations: map[string]string{
+							"ingress-gateway-api.io/source": fmt.Sprintf("%s/%s", ingress.Namespace, ingress.Name),
+						},
+					},
+					Spec: gatewayv1.BackendTLSPolicySpec{
+						TargetRefs: []gatewayv1.LocalPolicyTargetReferenceWithSectionName{
+							{
+								LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
+									Group: gatewayv1.Group(""),
+									Kind:  gatewayv1.Kind("Service"),
+									Name:  backendRef.Name,
+								},
+							},
+						},
+						Validation: gatewayv1.BackendTLSPolicyValidation{
+							Hostname:                gatewayv1.PreciseHostname(backendRef.Name),
+							WellKnownCACertificates: ptr(gatewayv1.WellKnownCACertificatesSystem),
+						},
+					},
+				}
+
+				policies = append(policies, policy)
+			}
+		}
+	}
+
+	// Also check default backend if present
+	if ingress.Spec.DefaultBackend != nil && ingress.Spec.DefaultBackend.Service != nil {
+		svc := ingress.Spec.DefaultBackend.Service
+		key := serviceKey{namespace: ingress.Namespace, name: svc.Name}
+		if !seen[key] {
+			policy := &gatewayv1.BackendTLSPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-tls", svc.Name),
+					Namespace: ingress.Namespace,
+					Labels:    copyLabels(ingress.Labels),
+					Annotations: map[string]string{
+						"ingress-gateway-api.io/source": fmt.Sprintf("%s/%s", ingress.Namespace, ingress.Name),
+					},
+				},
+				Spec: gatewayv1.BackendTLSPolicySpec{
+					TargetRefs: []gatewayv1.LocalPolicyTargetReferenceWithSectionName{
+						{
+							LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
+								Group: gatewayv1.Group(""),
+								Kind:  gatewayv1.Kind("Service"),
+								Name:  gatewayv1.ObjectName(svc.Name),
+							},
+						},
+					},
+					Validation: gatewayv1.BackendTLSPolicyValidation{
+						Hostname:                gatewayv1.PreciseHostname(svc.Name),
+						WellKnownCACertificates: ptr(gatewayv1.WellKnownCACertificatesSystem),
+					},
+				},
+			}
+			policies = append(policies, policy)
+		}
+	}
+
+	return policies
+}

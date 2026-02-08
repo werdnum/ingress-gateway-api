@@ -21,4 +21,8 @@ type ConversionResult struct {
 	// SecurityPolicy is the generated SecurityPolicy (if any).
 	// One per HTTPRoute is created when CORS or ExtAuth annotations are present.
 	SecurityPolicies []*egv1alpha1.SecurityPolicy
+
+	// BackendTLSPolicies are the generated BackendTLSPolicy resources (if any).
+	// One per unique backend service is created when backend-protocol: HTTPS annotation is present.
+	BackendTLSPolicies []*gatewayv1.BackendTLSPolicy
 }

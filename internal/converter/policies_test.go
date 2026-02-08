@@ -469,3 +469,233 @@ func TestBuildExtAuthWithResponseHeaders(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateBackendTLSPolicies(t *testing.T) {
+	cfg := &config.Config{
+		GatewayName:      "eg-gateway",
+		GatewayNamespace: "envoy-gateway",
+	}
+	c := New(cfg)
+
+	tests := []struct {
+		name            string
+		annotations     map[string]string
+		httpRoutes      []*gatewayv1.HTTPRoute
+		wantPolicyCount int
+		wantServices    []string
+	}{
+		{
+			name:            "no annotation",
+			annotations:     map[string]string{},
+			httpRoutes:      []*gatewayv1.HTTPRoute{},
+			wantPolicyCount: 0,
+		},
+		{
+			name: "backend-protocol HTTP (not HTTPS)",
+			annotations: map[string]string{
+				"nginx.ingress.kubernetes.io/backend-protocol": "HTTP",
+			},
+			httpRoutes:      []*gatewayv1.HTTPRoute{},
+			wantPolicyCount: 0,
+		},
+		{
+			name: "backend-protocol HTTPS with one service",
+			annotations: map[string]string{
+				"nginx.ingress.kubernetes.io/backend-protocol": "HTTPS",
+			},
+			httpRoutes: []*gatewayv1.HTTPRoute{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-route", Namespace: "default"},
+					Spec: gatewayv1.HTTPRouteSpec{
+						Rules: []gatewayv1.HTTPRouteRule{
+							{
+								BackendRefs: []gatewayv1.HTTPBackendRef{
+									{
+										BackendRef: gatewayv1.BackendRef{
+											BackendObjectReference: gatewayv1.BackendObjectReference{
+												Kind: ptr(gatewayv1.Kind("Service")),
+												Name: "my-service",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantPolicyCount: 1,
+			wantServices:    []string{"my-service"},
+		},
+		{
+			name: "backend-protocol HTTPS with multiple unique services",
+			annotations: map[string]string{
+				"nginx.ingress.kubernetes.io/backend-protocol": "HTTPS",
+			},
+			httpRoutes: []*gatewayv1.HTTPRoute{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-route", Namespace: "default"},
+					Spec: gatewayv1.HTTPRouteSpec{
+						Rules: []gatewayv1.HTTPRouteRule{
+							{
+								BackendRefs: []gatewayv1.HTTPBackendRef{
+									{
+										BackendRef: gatewayv1.BackendRef{
+											BackendObjectReference: gatewayv1.BackendObjectReference{
+												Kind: ptr(gatewayv1.Kind("Service")),
+												Name: "service-a",
+											},
+										},
+									},
+								},
+							},
+							{
+								BackendRefs: []gatewayv1.HTTPBackendRef{
+									{
+										BackendRef: gatewayv1.BackendRef{
+											BackendObjectReference: gatewayv1.BackendObjectReference{
+												Kind: ptr(gatewayv1.Kind("Service")),
+												Name: "service-b",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantPolicyCount: 2,
+			wantServices:    []string{"service-a", "service-b"},
+		},
+		{
+			name: "backend-protocol HTTPS with duplicate services",
+			annotations: map[string]string{
+				"nginx.ingress.kubernetes.io/backend-protocol": "HTTPS",
+			},
+			httpRoutes: []*gatewayv1.HTTPRoute{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-route", Namespace: "default"},
+					Spec: gatewayv1.HTTPRouteSpec{
+						Rules: []gatewayv1.HTTPRouteRule{
+							{
+								BackendRefs: []gatewayv1.HTTPBackendRef{
+									{
+										BackendRef: gatewayv1.BackendRef{
+											BackendObjectReference: gatewayv1.BackendObjectReference{
+												Kind: ptr(gatewayv1.Kind("Service")),
+												Name: "my-service",
+											},
+										},
+									},
+								},
+							},
+							{
+								BackendRefs: []gatewayv1.HTTPBackendRef{
+									{
+										BackendRef: gatewayv1.BackendRef{
+											BackendObjectReference: gatewayv1.BackendObjectReference{
+												Kind: ptr(gatewayv1.Kind("Service")),
+												Name: "my-service",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantPolicyCount: 1,
+			wantServices:    []string{"my-service"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ingress := &networkingv1.Ingress{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "test-ingress",
+					Namespace:   "default",
+					Annotations: tt.annotations,
+				},
+			}
+			annots := annotations.NewAnnotationSet(tt.annotations)
+
+			policies := c.generateBackendTLSPolicies(ingress, tt.httpRoutes, annots)
+
+			if len(policies) != tt.wantPolicyCount {
+				t.Errorf("expected %d policies, got %d", tt.wantPolicyCount, len(policies))
+				return
+			}
+
+			// Check that the expected services are present
+			if tt.wantServices != nil {
+				for i, wantService := range tt.wantServices {
+					if i >= len(policies) {
+						break
+					}
+					policy := policies[i]
+					if len(policy.Spec.TargetRefs) == 0 {
+						t.Error("expected at least one target ref")
+						continue
+					}
+					if string(policy.Spec.TargetRefs[0].Name) != wantService {
+						t.Errorf("expected service %s, got %s", wantService, policy.Spec.TargetRefs[0].Name)
+					}
+					// Check that validation uses WellKnownCACertificates: System
+					if policy.Spec.Validation.WellKnownCACertificates == nil {
+						t.Error("expected WellKnownCACertificates to be set")
+					} else if *policy.Spec.Validation.WellKnownCACertificates != gatewayv1.WellKnownCACertificatesSystem {
+						t.Errorf("expected WellKnownCACertificates System, got %s", *policy.Spec.Validation.WellKnownCACertificates)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestHasBackendTLSPolicy(t *testing.T) {
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		want        bool
+	}{
+		{
+			name:        "no annotation",
+			annotations: map[string]string{},
+			want:        false,
+		},
+		{
+			name: "backend-protocol HTTP",
+			annotations: map[string]string{
+				"nginx.ingress.kubernetes.io/backend-protocol": "HTTP",
+			},
+			want: false,
+		},
+		{
+			name: "backend-protocol HTTPS",
+			annotations: map[string]string{
+				"nginx.ingress.kubernetes.io/backend-protocol": "HTTPS",
+			},
+			want: true,
+		},
+		{
+			name: "backend-protocol lowercase https",
+			annotations: map[string]string{
+				"nginx.ingress.kubernetes.io/backend-protocol": "https",
+			},
+			want: false, // Should be case-sensitive, HTTPS only
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			annots := annotations.NewAnnotationSet(tt.annotations)
+			got := annots.HasBackendTLSPolicy()
+			if got != tt.want {
+				t.Errorf("HasBackendTLSPolicy() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

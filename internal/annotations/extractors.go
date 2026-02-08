@@ -285,6 +285,14 @@ func (a AnnotationSet) HasHTTPRouteFilters() bool {
 	return a.HasRewrite() || a.HasAppRoot() || a.HasSSLRedirect()
 }
 
+// HasBackendTLSPolicy returns true if backend-protocol annotation is set to HTTPS.
+func (a AnnotationSet) HasBackendTLSPolicy() bool {
+	if protocol, ok := a.GetString(BackendProtocol); ok {
+		return protocol == "HTTPS"
+	}
+	return false
+}
+
 func (a AnnotationSet) has(key string) bool {
 	_, ok := a[key]
 	return ok

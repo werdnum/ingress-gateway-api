@@ -99,6 +99,11 @@ func (c *Converter) ConvertIngressFull(ctx context.Context, ingress *networkingv
 		result.ClientTrafficPolicy = ctp
 	}
 
+	// Generate BackendTLSPolicies for backend-protocol: HTTPS
+	if tlsPolicies := c.generateBackendTLSPolicies(ingress, result.HTTPRoutes, annots); len(tlsPolicies) > 0 {
+		result.BackendTLSPolicies = tlsPolicies
+	}
+
 	return result
 }
 

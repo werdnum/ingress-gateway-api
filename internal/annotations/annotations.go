@@ -39,4 +39,7 @@ const (
 
 	// Path handling annotations
 	UseRegex = Prefix + "use-regex"
+
+	// Backend protocol annotation
+	BackendProtocol = Prefix + "backend-protocol"
 )
